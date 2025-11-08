@@ -1,4 +1,4 @@
-# data_exporter.py
+# file: ai/data_exporter.py
 
 import pandas as pd
 import logging
@@ -21,14 +21,6 @@ from indicators import (
 
 
 def create_raw_features(candles_data: list) -> pd.DataFrame | None:
-    """
-    Converts raw candle data into a massive, CLEANED feature DataFrame.
-    1. Converts types
-    2. Calculates all 30+ indicator sets
-    3. Creates 1-block-future targets
-    4. Cleans all NaN rows
-    Returns a single, clean DataFrame.
-    """
     try:
         column_names = [
             'timestamp', 'instrument', 'timeframe',
@@ -38,6 +30,12 @@ def create_raw_features(candles_data: list) -> pd.DataFrame | None:
             'vwap'
         ]
         df = pd.DataFrame(candles_data, columns=column_names)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df['time_minute_of_hour'] = df['timestamp'].dt.minute.astype(float)
+        df['time_hour_of_day'] = df['timestamp'].dt.hour.astype(float)
+        df['time_day_of_week'] = df['timestamp'].dt.dayofweek.astype(float)
+
+        logging.info("Successfully created time-based features (minute, hour, day_of_week).")
         decimal_cols = [
             'open', 'high', 'low', 'close',
             'min_spread', 'max_spread', 'avg_spread', 'vwap',

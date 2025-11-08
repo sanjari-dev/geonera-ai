@@ -1,4 +1,4 @@
-# pipeline.py
+# file: ai/pipeline.py
 
 import logging
 import os
@@ -13,6 +13,20 @@ from feature_selector import (
     run_phase3_selection,
     run_phase4_selection
 )
+
+
+def _save_column_list_to_txt(df: pd.DataFrame, parquet_file_path: str, instrument: str):
+    column_file_path = parquet_file_path.replace(".parquet", "_columns.txt")
+    columns_list = df.columns.tolist()
+
+    try:
+        with open(column_file_path, 'w') as f:
+            for column_name in columns_list:
+                f.write(f"{column_name}\n")
+        logging.info(
+            f"({instrument}) Successfully saved column list ({len(columns_list)} columns) to {column_file_path}")
+    except Exception as e:
+        logging.warning(f"({instrument}) Could not save column list to {column_file_path}: {e}")
 
 
 def _define_file_paths(params: dict, output_dir: str) -> dict:
@@ -58,6 +72,7 @@ def _generate_base_data(file_name: str, params: dict) -> pd.DataFrame | None:
         logging.info(f"({params['instrument']}) Saving base file with shape: {df_raw.shape}")
         df_raw.to_parquet(file_name, index=False)
         logging.info(f"({params['instrument']}) Raw feature (base) file saved to {file_name}")
+        _save_column_list_to_txt(df_raw, file_name, params['instrument'])
         return df_raw
     except Exception as e:
         logging.exception(f"({params['instrument']}) An unexpected error occurred during data generation: {e}")
@@ -85,6 +100,7 @@ def _run_selection_phase(
         logging.info(f"({instrument}) Saving {phase_name} file with shape: {df_out.shape}")
         df_out.to_parquet(output_file, index=False)
         logging.info(f"({instrument}) {phase_name} selected features saved to {output_file}")
+        _save_column_list_to_txt(df_out, output_file, instrument)
         logging.info(f"({instrument}) --- Finished Feature Selection: {phase_name} ---")
         return df_out
     except Exception as e:

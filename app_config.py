@@ -1,8 +1,8 @@
-# app_config.py
+# file: ai/app_config.py
 
 import os
 import logging
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 
 
 def get_query_parameters() -> dict | None:
@@ -24,7 +24,8 @@ def get_query_parameters() -> dict | None:
         end_date_naive = datetime.strptime(end_date_str, '%Y-%m-%d')
 
         start_time = start_date_naive.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=UTC)
-        end_time = end_date_naive.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=UTC)
+        end_date_exclusive = end_date_naive + timedelta(days=1)
+        end_time = end_date_exclusive.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=UTC)
 
         return {
             "instrument": instrument,
