@@ -20,10 +20,14 @@ from indicators import (
 )
 
 
-def save_to_parquet(candles_data: list, params: dict):
+def create_raw_features(candles_data: list) -> pd.DataFrame | None:
     """
-    Converts data to DataFrame, adds all indicators,
-    cleans data, and saves to Parquet.
+    Converts raw candle data into a massive, CLEANED feature DataFrame.
+    1. Converts types
+    2. Calculates all 30+ indicator sets
+    3. Creates 1-block-future targets
+    4. Cleans all NaN rows
+    Returns a single, clean DataFrame.
     """
     try:
         column_names = [
@@ -44,7 +48,7 @@ def save_to_parquet(candles_data: list, params: dict):
                 df[col] = df[col].astype(float)
 
         logging.info(f"Converted {len(decimal_cols)} Decimal columns to float64.")
-        logging.info("Starting all indicator calculations... (This will take a long time)")
+        logging.info("Starting all indicator calculations")
 
         sma_df = add_sma_calculations(df)
         ema_df = add_ema_calculations(df)
@@ -77,7 +81,7 @@ def save_to_parquet(candles_data: list, params: dict):
         var_df = add_variance_calculations(df)
         med_df = add_median_filter_calculations(df)
 
-        logging.info("Concatenating all indicator DataFrames...")
+        logging.info("Concatenating all indicator DataFrames")
         df = pd.concat([
             df, sma_df, ema_df, wma_df, vwma_df, hma_df, smma_df, dema_df, tema_df,
             rsi_df, cci_df, mom_df, roc_df, wpr_df, atr_df, adx_df, trix_df, sm_rsi_df,
@@ -87,43 +91,30 @@ def save_to_parquet(candles_data: list, params: dict):
             std_df, var_df, med_df
         ], axis=1)
 
-        logging.info(f"Original data size (before cleaning): {len(df)} rows")
-        indicator_cols = [col for col in df.columns if
-                          col.startswith(('sma_', 'ema_', 'wma_', 'vwma_', 'hma_', 'smma_',
-                                          'dema_', 'tema_', 'rsi_', 'cci_', 'mom_', 'roc_',
-                                          'wpr_', 'atr_', 'adx_', 'pdi_', 'mdi_', 'trix_',
-                                          'sm_rsi_', 'donchian_', 'env_', 'fcb_', 'obv_',
-                                          'cmf_', 'fi_', 'mfi_', 'vi_', 'aroon_', 'cmo_',
-                                          'std_dev_', 'variance_', 'median_'))
-                          ]
+        logging.info("Creating 1-block-future target variables (y)")
+        df['target_open_future_1'] = df['open'].shift(-1)
+        df['target_high_future_1'] = df['high'].shift(-1)
+        df['target_low_future_1'] = df['low'].shift(-1)
+        df['target_close_future_1'] = df['close'].shift(-1)
 
-        logging.info(f"Cleaning rows with any NaN values in {len(indicator_cols)} indicator columns...")
-        df = df.dropna(subset=indicator_cols)
+        logging.info(f"Raw feature DataFrame created with shape: {df.shape}")
 
-        logging.info(f"Cleaned data size (after dropping NaN rows): {len(df)} rows")
+        logging.info(f"Original size before NaN cleaning: {len(df)} rows")
+
+        id_cols = ['timestamp', 'instrument', 'timeframe']
+        cols_to_clean = [col for col in df.columns if col not in id_cols]
+
+        df = df.dropna(subset=cols_to_clean)
+        logging.info(f"Base file clean size after dropping NaN rows: {len(df)} rows")
 
         if df.empty:
-            logging.warning("No data remaining after cleaning. Parquet file will not be created.")
-            return
+            logging.warning("No data remaining after NaN cleaning. Returning empty DataFrame.")
 
-        filename = (
-            f"{params['instrument']}_{params['timeframe']}_"
-            f"{params['start_date_str']}_to_{params['end_date_str']}.parquet"
-        )
+        return df
 
-        df.to_parquet(filename, engine='pyarrow', index=False)
-
-        logging.info(f"Cleaned data successfully saved to {filename}")
-        logging.info("---")
-
-        logging.info("Cleaned DataFrame Info (including all new indicator columns):")
-        df.info(verbose=False)
-
-    except (IOError, OSError) as e:
-        logging.error(f"File system error (e.g., permissions, disk full) while saving Parquet: {e}")
     except (ValueError, TypeError) as e:
         logging.error(f"Data-related error (e.g., type conversion, calculation mismatch) during export: {e}")
-    except ImportError as e:
-        logging.error(f"Missing required library (e.g., pyarrow or pandas): {e}")
+        return None
     except Exception as e:
-        logging.exception(f"An unexpected error occurred in data_exporter: {e}")
+        logging.exception(f"An unexpected error occurred in create_raw_features: {e}")
+        return None

@@ -1,73 +1,62 @@
 # main.py
 
 import logging
+import os
 from dotenv import load_dotenv
-from app_config import get_query_parameters
-from data_exporter import save_to_parquet
-from config import get_db_connection
-from repository import get_candles_data
+import asyncio
+from pipeline import run_pipeline_for_instrument
+from send_telegram import send_telegram_message
 
+OUTPUT_DIR = "resources"
 
-def main():
-    """Main function to run the program."""
+async def main():
+    logging.info(f"--- Main Application Starting ---")
+    all_statuses = []
 
-    # 1. Load Configuration
-    logging.info("Loading query parameters...")
-    params = get_query_parameters()
-    if not params:
-        logging.error("Failed to load parameters. Exiting program.")
+    try:
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        logging.info(f"Ensured output directory exists: ./{OUTPUT_DIR}")
+    except OSError as e:
+        logging.critical(f"Could not create directory {OUTPUT_DIR}: {e}. Exiting.")
         return
 
-    client = None
     try:
-        # 2. Create Connection
-        logging.info("Attempting to connect to ClickHouse...")
-        client = get_db_connection()
-        if not client:
-            # Error already logged by get_db_connection()
-            return
-
-        logging.info(f"Query parameters set: Instrument={params['instrument']}, Timeframe={params['timeframe']}")
-        logging.info(f"Querying from {params['start_time']} to {params['end_time']}")
-
-        # 3. Fetch Data
-        candles = get_candles_data(
-            client=client,
-            instrument=params['instrument'],
-            timeframe=params['timeframe'],
-            start_time=params['start_time'],
-            end_time=params['end_time']
-        )
-
-        # 4. Process and Export Data
-        if candles:
-            logging.info(f"Successfully retrieved {len(candles)} candle records.")
-            # Delegate all export logic to its module
-            save_to_parquet(candles, params)
-
-        elif candles == []:
-            logging.warning("Query successful, but no data found for this time range.")
-        else:
-            logging.error("Failed to fetch data.")
-
+        status = run_pipeline_for_instrument(output_dir=OUTPUT_DIR)
+        all_statuses.append(status)
     except Exception as e:
-        logging.exception(f"An unexpected error occurred in main execution {e}")
+        error_msg = f"CRITICAL FAILURE: Main loop crash: {e}"
+        logging.exception(error_msg)
+        all_statuses.append(error_msg)
 
-    finally:
-        # 5. Close Connection
-        if client:
-            client.disconnect()
-            logging.info("Connection to ClickHouse closed.")
+    logging.info("All instrument pipelines complete.")
+
+    success_count = sum(1 for s in all_statuses if s.startswith("SUCCESS"))
+    skipped_count = sum(1 for s in all_statuses if s.startswith("SKIPPED"))
+    failed_count = sum(1 for s in all_statuses if s.startswith("FAILED") or s.startswith("WARNING") or s.startswith("CRITICAL"))
+
+    summary_message = f"*Geonera Feature Pipeline Summary*\n"
+    summary_message += f"Total: {len(all_statuses)} | Success: {success_count} | Skipped: {skipped_count} | Failed: {failed_count}\n"
+    summary_message += "---"
+
+    for status in all_statuses:
+        if not status.startswith("SKIPPED"):
+            if status.startswith("SUCCESS"):
+                status_message_short = status.split("Final file:")[0]
+                summary_message += f"\n- {status_message_short}"
+            else:
+                summary_message += f"\n- {status}"
+
+    logging.info("Sending summary to Telegram...")
+    await send_telegram_message(summary_message)
+    logging.info("--- Main Application Finished ---")
 
 
 if __name__ == "__main__":
     logging.basicConfig(
-        level=logging.INFO,  # Set the minimum level to log
+        level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(module)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
-
-    logging.info("Application starting...")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     load_dotenv()
-    main()
-    logging.info("Application finished.")
+    asyncio.run(main())

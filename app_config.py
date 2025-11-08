@@ -8,7 +8,6 @@ from datetime import datetime, UTC
 def get_query_parameters() -> dict | None:
     """
     Reads and parses query parameters from env vars and constants.
-    Returns a dictionary of parameters or None on failure.
     """
     try:
         instrument = os.getenv('QUERY_INSTRUMENT', 'EURUSD')

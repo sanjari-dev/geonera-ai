@@ -35,7 +35,8 @@ def get_candles_data(client: Client, instrument: str, timeframe: str, start_time
     }
 
     try:
-        logging.info(f"Fetching data for {instrument} ({timeframe}) from {start_time} to {end_time}...")
+        logging.info(f"Fetching data for {instrument} ({timeframe})")
+        logging.info(f"from: {params['start_time']} to {params['end_time']}")
         results = client.execute(query, params)
         return results
 
