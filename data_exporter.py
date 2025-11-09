@@ -2,6 +2,7 @@
 
 import pandas as pd
 import logging
+import time
 
 from indicators import (
     add_sma_calculations, add_ema_calculations, add_wma_calculations,
@@ -21,6 +22,12 @@ from indicators import (
 
 
 def create_raw_features(candles_data: list) -> pd.DataFrame | None:
+    """
+    Converts raw candle data into a massive feature DataFrame.
+    NOTE: This function returns a "dirty" DataFrame with NaNs
+    (in the indicator warmup period and targets)
+    The caller (e.g., pipeline.py) is responsible for filtering and dropping NaNs.
+    """
     try:
         column_names = [
             'timestamp', 'instrument', 'timeframe',
@@ -46,38 +53,131 @@ def create_raw_features(candles_data: list) -> pd.DataFrame | None:
                 df[col] = df[col].astype(float)
 
         logging.info(f"Converted {len(decimal_cols)} Decimal columns to float64.")
-        logging.info("Starting all indicator calculations")
+        logging.info("Starting all indicator calculations...")
+        total_start_time = time.perf_counter()
 
+        start_time = time.perf_counter()
         sma_df = add_sma_calculations(df)
+        logging.info(f"-> SMA Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         ema_df = add_ema_calculations(df)
+        logging.info(f"-> EMA Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         wma_df = add_wma_calculations(df)
+        logging.info(f"-> WMA Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         vwma_df = add_vwma_calculations(df)
+        logging.info(f"-> VWMA Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         hma_df = add_hma_calculations(df)
+        logging.info(f"-> HMA Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         smma_df = add_smma_calculations(df)
+        logging.info(f"-> SMMA Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         dema_df = add_dema_calculations(df)
+        logging.info(f"-> DEMA Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         tema_df = add_tema_calculations(df)
+        logging.info(f"-> TEMA Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         rsi_df = add_rsi_calculations(df)
+        logging.info(f"-> RSI Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         cci_df = add_cci_calculations(df)
+        logging.info(f"-> CCI Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         mom_df = add_momentum_calculations(df)
+        logging.info(f"-> Momentum Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         roc_df = add_roc_calculations(df)
+        logging.info(f"-> ROC Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         wpr_df = add_wpr_calculations(df)
+        logging.info(f"-> WPR Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         atr_df = add_atr_calculations(df)
+        logging.info(f"-> ATR Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         adx_df = add_adx_calculations(df)
+        logging.info(f"-> ADX Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         trix_df = add_trix_calculations(df)
+        logging.info(f"-> TRIX Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         sm_rsi_df = add_smoothed_rsi_calculations(df)
+        logging.info(f"-> Smoothed RSI Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         dc_df = add_donchian_channel_calculations(df)
+        logging.info(f"-> Donchian Channel Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         env_df = add_envelope_calculations(df)
+        logging.info(f"-> Envelope Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         fcb_df = add_fractal_chaos_bands_calculations(df)
+        logging.info(f"-> Fractal Chaos Bands Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         obv_df = add_obv_calculations(df)
+        logging.info(f"-> OBV Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         cmf_df = add_chaikin_money_flow_calculations(df)
+        logging.info(f"-> Chaikin Money Flow Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         fi_df = add_force_index_calculations(df)
+        logging.info(f"-> Force Index Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         mfi_df = add_money_flow_index_calculations(df)
+        logging.info(f"-> Money Flow Index Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         vi_df = add_vortex_indicator_calculations(df)
+        logging.info(f"-> Vortex Indicator Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         aroon_df = add_aroon_indicator_calculations(df)
+        logging.info(f"-> Aroon Indicator Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         cmo_df = add_chande_momentum_oscillator_calculations(df)
+        logging.info(f"-> Chande Momentum Oscillator Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         std_df = add_standard_deviation_calculations(df)
+        logging.info(f"-> Standard Deviation Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         var_df = add_variance_calculations(df)
+        logging.info(f"-> Variance Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        start_time = time.perf_counter()
         med_df = add_median_filter_calculations(df)
+        logging.info(f"-> Median Filter Calculations finished. Duration: {time.perf_counter() - start_time:.2f} seconds.")
+
+        total_end_time = time.perf_counter()
+        logging.info(f"All indicator calculations complete. Total duration: {total_end_time - total_start_time:.2f} seconds.")
 
         logging.info("Concatenating all indicator DataFrames")
         df = pd.concat([
@@ -96,18 +196,6 @@ def create_raw_features(candles_data: list) -> pd.DataFrame | None:
         df['target_close_future_1'] = df['close'].shift(-1)
 
         logging.info(f"Raw feature DataFrame created with shape: {df.shape}")
-
-        logging.info(f"Original size before NaN cleaning: {len(df)} rows")
-
-        id_cols = ['timestamp', 'instrument', 'timeframe']
-        cols_to_clean = [col for col in df.columns if col not in id_cols]
-
-        df = df.dropna(subset=cols_to_clean)
-        logging.info(f"Base file clean size after dropping NaN rows: {len(df)} rows")
-
-        if df.empty:
-            logging.warning("No data remaining after NaN cleaning. Returning empty DataFrame.")
-
         return df
 
     except (ValueError, TypeError) as e:

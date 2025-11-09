@@ -1,12 +1,120 @@
-# indicators.py
+# file: ai/indicators.py
 
 import pandas as pd
 import numpy as np
 import math
+import logging
+from numba import njit, prange
+from typing import Iterable
+
+
+@njit
+def _mad_numba(window: np.ndarray) -> float:
+    """Mean absolute deviation around the window mean (for CCI)."""
+    n = window.size
+    if n == 0:
+        return np.nan
+    m = 0.0
+    for i in range(n):
+        m += window[i]
+    m /= n
+    s = 0.0
+    for i in range(n):
+        v = window[i] - m
+        if v < 0:
+            v = -v
+        s += v
+    return s / n
+
+
+@njit
+def _get_median(window: np.ndarray) -> float:
+    """Numba helper for np.median (for Median Filter)."""
+    return float(np.median(window))
+
+
+@njit
+def _periods_since_extrema_deque(arr: np.ndarray, period: int, is_max: bool) -> np.ndarray:
+    """
+    Calculates 'age' (i - idx_extrema) at each i for a sliding window of size period.
+    is_max=True for argmax; False for argmin.
+    """
+    n = arr.size
+    out = np.full(n, np.nan, dtype=np.float32)
+    if period <= 1 or n == 0:
+        return out
+
+    dq = np.empty(n, dtype=np.int64)
+    head = 0
+    tail = 0
+
+    def dq_clear():
+        nonlocal head, tail
+        head = 0
+        tail = 0
+
+    def dq_push(current_index):
+        nonlocal head, tail
+        while tail > head:
+            j = dq[tail - 1]
+            if is_max:
+                if arr[j] >= arr[current_index]:
+                    break
+            else:
+                if arr[j] <= arr[current_index]:
+                    break
+            tail -= 1
+        dq[tail] = current_index
+        tail += 1
+
+    def dq_pop_front_older_than(left_bound):
+        nonlocal head, tail
+        while tail > head and dq[head] < left_bound:
+            head += 1
+
+    dq_clear()
+    for i in range(n):
+        dq_push(i)
+        left = i - period + 1
+        if left < 0:
+            continue
+        dq_pop_front_older_than(left)
+        if tail > head:
+            idx = dq[head]
+            out[i] = np.float32(i - idx)
+    return out
+
+
+@njit(parallel=True)
+def _compute_aroon_all(highs: np.ndarray, lows: np.ndarray, periods: np.ndarray):
+    """
+    Calculates Aroon Up/Down for all periods in parallel.
+    """
+    n = highs.size
+    k = periods.size
+    up = np.full((n, k), np.nan, dtype=np.float32)
+    down = np.full((n, k), np.nan, dtype=np.float32)
+    for pi in prange(k):
+        p = int(periods[pi])
+        if p <= 1:
+            continue
+        div = float(p - 1)
+        if div == 0:
+            continue
+        ps_high = _periods_since_extrema_deque(highs, p, True)  # argmax age
+        ps_low = _periods_since_extrema_deque(lows, p, False)  # argmin age
+        for i in range(n):
+            if np.isnan(ps_high[i]) or np.isnan(ps_low[i]):
+                continue
+            up_val = ((div - ps_high[i]) / div) * 100.0
+            down_val = ((div - ps_low[i]) / div) * 100.0
+            up[i, pi] = up_val
+            down[i, pi] = down_val
+    return up, down
 
 
 def _get_typical_price(df: pd.DataFrame) -> pd.Series:
-    return (df['high'] + df['low'] + df['close']) / 3
+    return (df["high"].astype("float32") + df["low"].astype("float32") + df["close"].astype("float32")) / 3.0
 
 
 def _get_total_volume(df: pd.DataFrame) -> pd.Series:
@@ -36,14 +144,17 @@ def _get_money_flow_volume(df: pd.DataFrame) -> pd.Series:
 
 
 def _calculate_wma(data: pd.Series, period: int) -> pd.Series:
+    """Calculates Weighted Moving Average using fast np.convolve."""
     if period < 1:
         return pd.Series(index=data.index, dtype=float)
     if period == 1:
         return data
     weights = np.arange(1, period + 1)
-    def wma_calc(window_data):
-        return np.dot(window_data, weights) / weights.sum()
-    return data.rolling(window=period).apply(wma_calc, raw=True)
+    weights_sum = weights.sum()
+    wma_values = np.convolve(data.to_numpy(), weights, mode='valid') / weights_sum
+    wma_full = np.full(len(data), np.nan)
+    wma_full[period - 1:] = wma_values
+    return pd.Series(wma_full, index=data.index, dtype=float)
 
 
 def _calculate_rsi(data: pd.Series, period: int) -> pd.Series:
@@ -61,7 +172,29 @@ def _calculate_rsi(data: pd.Series, period: int) -> pd.Series:
     return rsi
 
 
+def _calculate_rolling_sum_ratio(
+        numerator_series: pd.Series,
+        denominator_series: pd.Series,
+        periods: Iterable[int],
+        column_template: str
+) -> pd.DataFrame:
+    """
+    Generic helper to calculate (rolling_sum(A) / rolling_sum(B)) for multiple periods.
+    """
+    series_list = []
+    for period in periods:
+        if period <= 0:
+            continue
+        sum_numerator = numerator_series.rolling(window=period).sum()
+        sum_denominator = denominator_series.rolling(window=period).sum()
+        column_name = column_template.format(period)
+        final_series = (sum_numerator / sum_denominator.replace(0, np.nan)).rename(column_name)
+        series_list.append(final_series)
+    return pd.concat(series_list, axis=1)
+
+
 def add_sma_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("SMA Calculations")
     sma_periods = range(5, 201)
     sma_series_list = []
     for period in sma_periods:
@@ -72,6 +205,7 @@ def add_sma_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_ema_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("EMA Calculations")
     ema_periods = range(5, 201)
     ema_series_list = []
     for period in ema_periods:
@@ -82,6 +216,7 @@ def add_ema_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_wma_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("WMA Calculations")
     wma_periods = range(5, 201)
     wma_series_list = []
     for period in wma_periods:
@@ -92,20 +227,19 @@ def add_wma_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_vwma_calculations(df: pd.DataFrame) -> pd.DataFrame:
-    vwma_periods = range(5, 201)
-    vwma_series_list = []
+    logging.info("VWMA Calculations")
     price_x_volume = df['close'] * df['tick_count']
     volume = df['tick_count']
-    for period in vwma_periods:
-        column_name = f'vwma_{period}'
-        sum_price_x_volume = price_x_volume.rolling(window=period).sum()
-        sum_volume = volume.rolling(window=period).sum()
-        vwma_series = (sum_price_x_volume / sum_volume.replace(0, np.nan)).rename(column_name)
-        vwma_series_list.append(vwma_series)
-    return pd.concat(vwma_series_list, axis=1)
+    return _calculate_rolling_sum_ratio(
+        numerator_series=price_x_volume,
+        denominator_series=volume,
+        periods=range(5, 201),
+        column_template="vwma_{}"
+    )
 
 
 def add_hma_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("HMA Calculations")
     hma_periods = range(5, 201)
     hma_series_list = []
     for period in hma_periods:
@@ -122,6 +256,7 @@ def add_hma_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_smma_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("SMMA Calculations")
     smma_periods = range(5, 201)
     smma_series_list = []
     for period in smma_periods:
@@ -133,6 +268,7 @@ def add_smma_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_dema_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("DEMA Calculations")
     dema_periods = range(5, 201)
     dema_series_list = []
     for period in dema_periods:
@@ -145,6 +281,7 @@ def add_dema_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_tema_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("TEMA Calculations")
     tema_periods = range(5, 201)
     tema_series_list = []
     for period in tema_periods:
@@ -158,6 +295,7 @@ def add_tema_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_rsi_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("RSI Calculations")
     rsi_periods = range(5, 201)
     rsi_series_list = []
     for period in rsi_periods:
@@ -167,21 +305,31 @@ def add_rsi_calculations(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(rsi_series_list, axis=1)
 
 
-def add_cci_calculations(df: pd.DataFrame) -> pd.DataFrame:
-    cci_periods = range(5, 201)
+def add_cci_calculations(df: pd.DataFrame, periods: Iterable[int] = range(5, 201)) -> pd.DataFrame:
+    """
+    Compute CCI for multiple periods efficiently using Numba-accelerated rolling MAD.
+    Returns a DataFrame with columns: cci_{period}
+    """
+    logging.info("CCI Calculations (Numba-accelerated)")
+    tp = _get_typical_price(df)  # float32
     cci_series_list = []
-    tp = _get_typical_price(df)
-    for period in cci_periods:
-        if period <= 1: continue
-        column_name = f'cci_{period}'
-        tp_sma = tp.rolling(window=period).mean()
-        mad = tp.rolling(window=period).apply(lambda x: (x - x.mean()).abs().mean(), raw=False)
-        cci_series = (tp - tp_sma) / (0.015 * mad.replace(0, np.nan))
-        cci_series_list.append(cci_series.rename(column_name))
+    for period in periods:
+        if period <= 1:
+            continue
+        col_name = f"cci_{period}"
+        tp_sma = tp.rolling(window=period, min_periods=period).mean()
+        # noinspection PyTypeChecker
+        mad = tp.rolling(window=period, min_periods=period).apply(
+            _mad_numba, raw=True, engine="numba", engine_kwargs={"parallel": True}
+        )
+        denom = 0.015 * mad.replace(0.0, np.nan)
+        cci_series = (tp - tp_sma) / denom
+        cci_series_list.append(cci_series.astype("float32").rename(col_name))
     return pd.concat(cci_series_list, axis=1)
 
 
 def add_momentum_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Momentum Calculations")
     mom_periods = range(5, 201)
     mom_series_list = []
     for period in mom_periods:
@@ -192,6 +340,7 @@ def add_momentum_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_roc_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("ROC Calculations")
     roc_periods = range(5, 201)
     roc_series_list = []
     for period in roc_periods:
@@ -203,6 +352,7 @@ def add_roc_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_wpr_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("WPR Calculations")
     wpr_periods = range(5, 201)
     wpr_series_list = []
     for period in wpr_periods:
@@ -216,6 +366,7 @@ def add_wpr_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_atr_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("ATR Calculations")
     atr_periods = range(5, 201)
     atr_series_list = []
     tr = _get_true_range(df)
@@ -228,6 +379,7 @@ def add_atr_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_adx_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("ADX Calculations")
     adx_periods = range(5, 201)
     adx_series_list = []
     tr = _get_true_range(df)
@@ -261,6 +413,7 @@ def add_adx_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_trix_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("TRIX Calculations")
     trix_periods = range(5, 201)
     trix_series_list = []
     for period in trix_periods:
@@ -275,6 +428,7 @@ def add_trix_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_smoothed_rsi_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Smoothed RSI Calculations")
     rsx_periods = range(5, 201)
     rsx_series_list = []
     for period in rsx_periods:
@@ -287,6 +441,7 @@ def add_smoothed_rsi_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_donchian_channel_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Donchian Channel Calculations")
     dc_periods = range(5, 201)
     dc_series_list = []
     for period in dc_periods:
@@ -300,6 +455,7 @@ def add_donchian_channel_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_envelope_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Envelope Calculations")
     env_periods = range(5, 201)
     env_series_list = []
     envelope_percent = 0.025
@@ -314,6 +470,7 @@ def add_envelope_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_fractal_chaos_bands_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Fractal Chaos Bands Calculations")
     fcb_periods = range(5, 201)
     fcb_series_list = []
     for period in fcb_periods:
@@ -327,6 +484,7 @@ def add_fractal_chaos_bands_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_obv_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("OBV Calculations")
     total_volume = _get_total_volume(df)
     close_diff = df['close'].diff(1)
     obv_direction_sign = np.sign(close_diff)
@@ -342,20 +500,19 @@ def add_obv_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_chaikin_money_flow_calculations(df: pd.DataFrame) -> pd.DataFrame:
-    cmf_periods = range(5, 201)
-    cmf_series_list = []
+    logging.info("Chaikin Money Flow Calculations")
     mfv = _get_money_flow_volume(df)
     total_volume = _get_total_volume(df)
-    for period in cmf_periods:
-        column_name = f'cmf_{period}'
-        sum_mfv = mfv.rolling(window=period).sum()
-        sum_vol = total_volume.rolling(window=period).sum()
-        cmf_series = (sum_mfv / sum_vol.replace(0, np.nan)).rename(column_name)
-        cmf_series_list.append(cmf_series)
-    return pd.concat(cmf_series_list, axis=1)
+    return _calculate_rolling_sum_ratio(
+        numerator_series=mfv,
+        denominator_series=total_volume,
+        periods=range(5, 201),
+        column_template="cmf_{}"
+    )
 
 
 def add_force_index_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Force Index Calculations")
     fi_periods = range(5, 201)
     fi_series_list = []
     total_volume = _get_total_volume(df)
@@ -369,6 +526,7 @@ def add_force_index_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_money_flow_index_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Money Flow Index Calculations")
     mfi_periods = range(5, 201)
     mfi_series_list = []
     tp = _get_typical_price(df)
@@ -392,6 +550,7 @@ def add_money_flow_index_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_vortex_indicator_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Vortex Indicator Calculations")
     vi_periods = range(5, 201)
     vi_series_list = []
     tr = _get_true_range(df)
@@ -410,30 +569,28 @@ def add_vortex_indicator_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_aroon_indicator_calculations(df: pd.DataFrame) -> pd.DataFrame:
-    aroon_periods = range(5, 201)
-    aroon_series_list = []
-    for period in aroon_periods:
-        if period <= 1: continue
-        column_up = f'aroon_up_{period}'
-        column_down = f'aroon_down_{period}'
-        column_osc = f'aroon_osc_{period}'
-        periods_since_high_series = df['high'].rolling(window=period).apply(
-            lambda x: (period - 1) - np.argmax(x), raw=True
-        )
-        periods_since_low_series = df['low'].rolling(window=period).apply(
-            lambda x: (period - 1) - np.argmin(x), raw=True
-        )
-        divisor = float(period - 1)
-        aroon_up = (((divisor - periods_since_high_series) / divisor) * 100).rename(column_up)
-        aroon_down = (((divisor - periods_since_low_series) / divisor) * 100).rename(column_down)
-        aroon_osc = (aroon_up - aroon_down).rename(column_osc)
-        aroon_series_list.append(aroon_up)
-        aroon_series_list.append(aroon_down)
-        aroon_series_list.append(aroon_osc)
-    return pd.concat(aroon_series_list, axis=1)
+    logging.info("Aroon Indicator Calculations (Numba deque + parallel)")
+    highs = df["high"].to_numpy(dtype=np.float32, copy=False)
+    lows = df["low"].to_numpy(dtype=np.float32, copy=False)
+    periods_arr = np.arange(5, 201, dtype=np.int32)
+    up_all, down_all = _compute_aroon_all(highs, lows, periods_arr)
+    all_cols = {}
+    for j, p in enumerate(periods_arr):
+        up_col = f"aroon_up_{p}"
+        down_col = f"aroon_down_{p}"
+        osc_col = f"aroon_osc_{p}"
+        up_data = up_all[:, j]
+        down_data = down_all[:, j]
+        osc_data = up_data - down_data
+        all_cols[up_col] = up_data
+        all_cols[down_col] = down_data
+        all_cols[osc_col] = osc_data.astype(np.float32)
+
+    return pd.DataFrame(all_cols, index=df.index)
 
 
 def add_chande_momentum_oscillator_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Chande Momentum Oscillator Calculations")
     cmo_periods = range(5, 201)
     cmo_series_list = []
     delta = df['close'].diff(1)
@@ -451,6 +608,7 @@ def add_chande_momentum_oscillator_calculations(df: pd.DataFrame) -> pd.DataFram
 
 
 def add_standard_deviation_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Standard Deviation Calculations")
     std_periods = range(5, 201)
     std_series_list = []
     for period in std_periods:
@@ -461,6 +619,7 @@ def add_standard_deviation_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_variance_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Variance Calculations")
     var_periods = range(5, 201)
     var_series_list = []
     for period in var_periods:
@@ -471,10 +630,15 @@ def add_variance_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_median_filter_calculations(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Median Filter Calculations (Numba-accelerated)")
     med_periods = range(5, 201)
     med_series_list = []
+    close_series = df['close'].astype("float32")
     for period in med_periods:
         column_name = f'median_{period}'
-        med_series = df['close'].rolling(window=period).median().rename(column_name)
+        # noinspection PyTypeChecker
+        med_series = close_series.rolling(window=period, min_periods=period).apply(
+            _get_median, raw=True, engine="numba", engine_kwargs={"parallel": True}
+        ).rename(column_name)
         med_series_list.append(med_series)
     return pd.concat(med_series_list, axis=1)
