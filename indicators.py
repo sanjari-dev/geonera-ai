@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import math
 import logging
-from numba import njit, prange
+from numba import njit
 from typing import Iterable
 
 
@@ -25,92 +25,6 @@ def _mad_numba(window: np.ndarray) -> float:
             v = -v
         s += v
     return s / n
-
-
-@njit
-def _get_median(window: np.ndarray) -> float:
-    """Numba helper for np.median (for Median Filter)."""
-    return float(np.median(window))
-
-
-@njit
-def _periods_since_extrema_deque(arr: np.ndarray, period: int, is_max: bool) -> np.ndarray:
-    """
-    Calculates 'age' (i - idx_extrema) at each i for a sliding window of size period.
-    is_max=True for argmax; False for argmin.
-    """
-    n = arr.size
-    out = np.full(n, np.nan, dtype=np.float32)
-    if period <= 1 or n == 0:
-        return out
-
-    dq = np.empty(n, dtype=np.int64)
-    head = 0
-    tail = 0
-
-    def dq_clear():
-        nonlocal head, tail
-        head = 0
-        tail = 0
-
-    def dq_push(current_index):
-        nonlocal head, tail
-        while tail > head:
-            j = dq[tail - 1]
-            if is_max:
-                if arr[j] >= arr[current_index]:
-                    break
-            else:
-                if arr[j] <= arr[current_index]:
-                    break
-            tail -= 1
-        dq[tail] = current_index
-        tail += 1
-
-    def dq_pop_front_older_than(left_bound):
-        nonlocal head, tail
-        while tail > head and dq[head] < left_bound:
-            head += 1
-
-    dq_clear()
-    for i in range(n):
-        dq_push(i)
-        left = i - period + 1
-        if left < 0:
-            continue
-        dq_pop_front_older_than(left)
-        if tail > head:
-            idx = dq[head]
-            out[i] = np.float32(i - idx)
-    return out
-
-
-@njit(parallel=True)
-def _compute_aroon_all(highs: np.ndarray, lows: np.ndarray, periods: np.ndarray):
-    """
-    Calculates Aroon Up/Down for all periods in parallel.
-    """
-    n = highs.size
-    k = periods.size
-    up = np.full((n, k), np.nan, dtype=np.float32)
-    down = np.full((n, k), np.nan, dtype=np.float32)
-    for pi in prange(k):
-        p = int(periods[pi])
-        if p <= 1:
-            continue
-        div = float(p - 1)
-        if div == 0:
-            continue
-        ps_high = _periods_since_extrema_deque(highs, p, True)  # argmax age
-        ps_low = _periods_since_extrema_deque(lows, p, False)  # argmin age
-        for i in range(n):
-            if np.isnan(ps_high[i]) or np.isnan(ps_low[i]):
-                continue
-            up_val = ((div - ps_high[i]) / div) * 100.0
-            down_val = ((div - ps_low[i]) / div) * 100.0
-            up[i, pi] = up_val
-            down[i, pi] = down_val
-    return up, down
 
 
 def _get_typical_price(df: pd.DataFrame) -> pd.Series:
@@ -569,24 +483,49 @@ def add_vortex_indicator_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_aroon_indicator_calculations(df: pd.DataFrame) -> pd.DataFrame:
-    logging.info("Aroon Indicator Calculations (Numba deque + parallel)")
-    highs = df["high"].to_numpy(dtype=np.float32, copy=False)
-    lows = df["low"].to_numpy(dtype=np.float32, copy=False)
+    """
+    Calculates Aroon Indicator using Pandas rolling.apply() accelerated by Numba.
+    This version replaces the complex custom deque logic.
+    """
+    logging.info("Aroon Indicator Calculations (Pandas rolling + Numba apply)")
+    highs = df["high"]
+    lows = df["low"]
+
     periods_arr = np.arange(5, 201, dtype=np.int32)
-    up_all, down_all = _compute_aroon_all(highs, lows, periods_arr)
-    all_cols = {}
-    for j, p in enumerate(periods_arr):
+
+    all_cols = []
+
+    for p_int in periods_arr:
+        p = int(p_int)
+        # noinspection PyTypeChecker
+        idx_high_rel = highs.rolling(window=p, min_periods=p).apply(
+            np.argmax, raw=True, engine="numba", engine_kwargs={"parallel": True}
+        )
+        # noinspection PyTypeChecker
+        idx_low_rel = lows.rolling(window=p, min_periods=p).apply(
+            np.argmin, raw=True, engine="numba", engine_kwargs={"parallel": True}
+        )
+
+        ps_high = (p - 1.0) - idx_high_rel
+        ps_low = (p - 1.0) - idx_low_rel
+
+        div = float(p - 1)
+        if div == 0:
+            continue
+
+        up_val = ((div - ps_high) / div) * 100.0
+        down_val = ((div - ps_low) / div) * 100.0
+
         up_col = f"aroon_up_{p}"
         down_col = f"aroon_down_{p}"
         osc_col = f"aroon_osc_{p}"
-        up_data = up_all[:, j]
-        down_data = down_all[:, j]
-        osc_data = up_data - down_data
-        all_cols[up_col] = up_data
-        all_cols[down_col] = down_data
-        all_cols[osc_col] = osc_data.astype(np.float32)
 
-    return pd.DataFrame(all_cols, index=df.index)
+        all_cols.append(up_val.rename(up_col))
+        all_cols.append(down_val.rename(down_col))
+        all_cols.append((up_val - down_val).rename(osc_col).astype(np.float32))
+
+    logging.info(f"Aroon calculations complete. Concatenating {len(all_cols)} columns.")
+    return pd.concat(all_cols, axis=1)
 
 
 def add_chande_momentum_oscillator_calculations(df: pd.DataFrame) -> pd.DataFrame:
@@ -630,15 +569,12 @@ def add_variance_calculations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_median_filter_calculations(df: pd.DataFrame) -> pd.DataFrame:
-    logging.info("Median Filter Calculations (Numba-accelerated)")
+    logging.info("Median Filter Calculations")
     med_periods = range(5, 201)
     med_series_list = []
     close_series = df['close'].astype("float32")
     for period in med_periods:
         column_name = f'median_{period}'
-        # noinspection PyTypeChecker
-        med_series = close_series.rolling(window=period, min_periods=period).apply(
-            _get_median, raw=True, engine="numba", engine_kwargs={"parallel": True}
-        ).rename(column_name)
+        med_series = close_series.rolling(window=period, min_periods=period).median().rename(column_name)
         med_series_list.append(med_series)
     return pd.concat(med_series_list, axis=1)

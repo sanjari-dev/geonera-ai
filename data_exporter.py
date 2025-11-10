@@ -189,12 +189,6 @@ def create_raw_features(candles_data: list) -> pd.DataFrame | None:
             std_df, var_df, med_df
         ], axis=1)
 
-        logging.info("Creating 1-block-future target variables (y)")
-        df['target_open_future_1'] = df['open'].shift(-1)
-        df['target_high_future_1'] = df['high'].shift(-1)
-        df['target_low_future_1'] = df['low'].shift(-1)
-        df['target_close_future_1'] = df['close'].shift(-1)
-
         logging.info(f"Raw feature DataFrame created with shape: {df.shape}")
         return df
 

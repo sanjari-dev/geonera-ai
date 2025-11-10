@@ -3,8 +3,6 @@
 import logging
 import os
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 from datetime import timedelta
 from app_config import get_query_parameters
 from config import get_db_connection
@@ -17,7 +15,6 @@ from feature_selector import (
     run_phase4_selection
 )
 
-CHUNK_SIZE_DAYS = 90
 MAX_INDICATOR_PERIOD = 200
 
 
@@ -31,8 +28,7 @@ def _save_column_list_to_txt(df: pd.DataFrame, parquet_file_path: str, instrumen
         with open(column_file_path, 'w') as f:
             for column_name in columns_list:
                 f.write(f"{column_name}\n")
-        logging.info(
-            f"({instrument}) Successfully saved column list ({len(columns_list)} columns) to {column_file_path}")
+        logging.info(f"({instrument}) Successfully saved column list ({len(columns_list)} columns) to {column_file_path}")
     except Exception as e:
         logging.warning(f"({instrument}) Could not save column list to {column_file_path}: {e}")
 
@@ -70,17 +66,24 @@ def _get_timedelta_for_timeframe(timeframe: str) -> timedelta:
         except ValueError:
             logging.warning(f"Unknown timeframe {timeframe}, defaulting to h1.")
             return timedelta(hours=1)
+    elif timeframe.startswith('D'):
+        try:
+            days = int(timeframe[1:])
+            return timedelta(days=days)
+        except ValueError:
+            logging.warning(f"Unknown timeframe {timeframe}, defaulting to D1.")
+            return timedelta(days=1)
 
     logging.warning(f"Undefined timeframe {timeframe}, defaulting to m1.")
     return timedelta(minutes=1)
 
 
-def _generate_base_data_streaming(params: dict, base_parquet_file: str) -> str:
+def _generate_base_data_full(params: dict, base_parquet_file: str) -> str:
     """
-    Generates the base feature data using streaming (chunking)
-    to avoid RAM exhaustion on large datasets.
+    Generates the base feature data by loading ALL data into memory at once (non-streaming).
+    SAVES "DIRTY" DATA (including NaNs from the initial warmup) directly to Parquet.
     """
-    logging.info(f"--- STARTING STREAMING BASE DATA GENERATOR ---")
+    logging.info(f"--- STARTING FULL (NON-STREAMING) BASE DATA GENERATOR (DIRTY) ---")
 
     instrument = params['instrument']
     timeframe = params['timeframe']
@@ -89,97 +92,49 @@ def _generate_base_data_streaming(params: dict, base_parquet_file: str) -> str:
         logging.warning(f"({instrument}) Old base file found. Deleting: {base_parquet_file}")
         os.remove(base_parquet_file)
 
-    overlap_delta = timedelta(days=10)
-    logging.info(f"({instrument}) Using overlap of {overlap_delta} to cover indicator warmup.")
-
     client = None
-    pq_writer = None
-    schema = None
-
     try:
         client = get_db_connection()
         if not client:
             return f"FAILED ({instrument}): Could not connect to ClickHouse."
 
-        current_chunk_start_time = params['start_time']
-        total_rows_processed = 0
+        logging.info(f"({instrument}) Fetching FULL data range: {params['start_time']} to {params['end_time']}")
 
-        logging.info(f"({instrument}) Starting streaming process from {params['start_time']} to {params['end_time']}")
+        candles = get_candles_data(
+            client=client,
+            instrument=instrument,
+            timeframe=timeframe,
+            start_time=params['start_time'],
+            end_time=params['end_time']
+        )
 
-        while current_chunk_start_time < params['end_time']:
-            current_chunk_end_time = current_chunk_start_time + timedelta(days=CHUNK_SIZE_DAYS)
-            if current_chunk_end_time > params['end_time']:
-                current_chunk_end_time = params['end_time']
-
-            query_start_time = current_chunk_start_time - overlap_delta
-            query_end_time = current_chunk_end_time
-
-            logging.info(f"({instrument}) Processing chunk: {current_chunk_start_time} to {current_chunk_end_time}")
-            logging.info(f"   -> Fetching data (including overlap): {query_start_time} to {query_end_time}")
-
-            candles = get_candles_data(
-                client=client,
-                instrument=instrument,
-                timeframe=timeframe,
-                start_time=query_start_time,
-                end_time=query_end_time
-            )
-            if not candles:
-                logging.warning(f"({instrument}) No data found for range {current_chunk_start_time}. Skipping.")
-                current_chunk_start_time = current_chunk_end_time
-                continue
-
-            df_chunk_dirty = create_raw_features(candles)
-
-            if df_chunk_dirty is None or df_chunk_dirty.empty:
-                logging.error(f"({instrument}) create_raw_features failed or returned empty data for this chunk.")
-                current_chunk_start_time = current_chunk_end_time
-                continue
-
-            # noinspection PyTypeChecker
-            df_chunk_filtered = df_chunk_dirty[df_chunk_dirty['timestamp'] >= current_chunk_start_time].copy()
-            df_chunk_filtered: pd.DataFrame = df_chunk_filtered
-
-            if df_chunk_filtered.empty:
-                logging.warning(
-                    f"({instrument}) No data left after timestamp filtering in chunk {current_chunk_start_time}.")
-                current_chunk_start_time = current_chunk_end_time
-                continue
-
-            if pq_writer is None:
-                # noinspection PyArgumentList
-                table = pa.Table.from_pandas(df_chunk_filtered)
-                schema = table.schema
-                pq_writer = pq.ParquetWriter(base_parquet_file, schema)
-                pq_writer.write_table(table)
-            else:
-                # noinspection PyArgumentList
-                table = pa.Table.from_pandas(df_chunk_filtered, schema=schema)
-                pq_writer.write_table(table)
-
-            rows_in_chunk = len(df_chunk_filtered)
-            total_rows_processed += rows_in_chunk
-            logging.info(f"   -> Chunk processed. {rows_in_chunk} (uncleaned) rows saved. Total: {total_rows_processed} rows.")
-            current_chunk_start_time = current_chunk_end_time
-
-        logging.info(f"--- STREAMING COMPLETE. File saved to: {base_parquet_file} ---")
-
-        if schema:
-            df_schema = pd.DataFrame(columns=schema.names)
-            _save_column_list_to_txt(df=df_schema, parquet_file_path=base_parquet_file, instrument=instrument)
-
-        if total_rows_processed == 0:
-            logging.error(f"({instrument}) Streaming finished but 0 total rows were processed.")
+        if not candles:
+            logging.error(f"({instrument}) No data found for the entire range. Aborting.")
             return f"FAILED ({instrument}): 0 rows processed. Check data source and timeframe."
 
-        return f"SUCCESS ({instrument}): Base file generated ({total_rows_processed} rows). Please re-run to start Phase 1."
+        logging.info(f"({instrument}) Data fetched. Found {len(candles)} rows. Creating raw features...")
+        df_base_dirty = create_raw_features(candles)
+
+        if df_base_dirty is None or df_base_dirty.empty:
+            logging.error(f"({instrument}) create_raw_features failed or returned empty data for the full dataset.")
+            return f"FAILED ({instrument}): create_raw_features returned empty data."
+
+        logging.info(
+            f"({instrument}) Features created. Saving (DIRTY) file with shape {df_base_dirty.shape} to {base_parquet_file}")
+
+        df_base_dirty.to_parquet(base_parquet_file, index=False)
+
+        total_rows_processed = len(df_base_dirty)
+        logging.info(f"--- FULL LOAD COMPLETE. DIRTY file saved. Total: {total_rows_processed} rows. ---")
+
+        _save_column_list_to_txt(df=df_base_dirty, parquet_file_path=base_parquet_file, instrument=instrument)
+
+        return f"SUCCESS ({instrument}): Base file generated ({total_rows_processed} rows)."
 
     except Exception as e:
-        logging.exception(f"({instrument}) An error occurred during streaming generation: {e}")
-        return f"FAILED ({instrument}): Streaming generator error. {e}"
+        logging.exception(f"({instrument}) An error occurred during full data generation: {e}")
+        return f"FAILED ({instrument}): Full generator error. {e}"
     finally:
-        if pq_writer:
-            pq_writer.close()
         if client:
             client.disconnect()
             logging.info(f"({instrument}) ClickHouse connection closed.")
@@ -259,18 +214,28 @@ def run_pipeline_for_instrument(output_dir: str) -> str:
                     # 7. Check/Get Base Data
                     logging.info(f"({instrument}) Checking for base feature file: {files['base']}")
                     if not os.path.exists(files['base']):
-                        logging.warning(f"({instrument}) Base file not found. Starting streaming generator...")
-                        status = _generate_base_data_streaming(params, files['base'])
-                        return status
+                        logging.warning(f"({instrument}) Base file not found. Starting full (non-streaming) generator...")
+                        status = _generate_base_data_full(params, files['base'])
+                        if not status.startswith("SUCCESS"):
+                            return status
+
+                        logging.info(f"({instrument}) Base file generation complete. Automatically proceeding to load and clean...")
 
                     try:
-                        logging.info(f"({instrument}) Loading existing base feature file: {files['base']}")
+                        logging.info(f"({instrument}) Loading DIRTY base feature file: {files['base']}")
                         df_base = pd.read_parquet(files['base'])
-                        logging.info(f"({instrument}) Successfully loaded base file with shape: {df_base.shape}")
+                        logging.info(f"({instrument}) Successfully loaded DIRTY base file with shape: {df_base.shape}")
                     except Exception as e:
                         logging.error(f"({instrument}) Failed to read base file {files['base']}: {e}")
-                        logging.error(f"({instrument}) File might be corrupt. Try deleting it and re-running to regenerate.")
+                        logging.error(
+                            f"({instrument}) File might be corrupt. Try deleting it and re-running to regenerate.")
                         return f"FAILED ({instrument}): Could not read existing base file."
+
+                    logging.info(f"({instrument}) Creating 1-block-future target variables (y)")
+                    df_base['target_open_future_1'] = df_base['open'].shift(-1)
+                    df_base['target_high_future_1'] = df_base['high'].shift(-1)
+                    df_base['target_low_future_1'] = df_base['low'].shift(-1)
+                    df_base['target_close_future_1'] = df_base['close'].shift(-1)
 
                     logging.info(f"({instrument}) Base file loaded. Cleaning NaNs from indicators and targets...")
                     id_cols = ['timestamp', 'instrument', 'timeframe']
@@ -280,7 +245,8 @@ def run_pipeline_for_instrument(output_dir: str) -> str:
                     df_base = df_base.dropna(subset=cols_to_clean)
                     final_rows = len(df_base)
 
-                    logging.info(f"({instrument}) NaNs cleaned. Rows removed: {initial_rows - final_rows}. Final base shape: {df_base.shape}")
+                    logging.info(
+                        f"({instrument}) NaNs cleaned. Rows removed: {initial_rows - final_rows}. Final base shape: {df_base.shape}")
 
                     if df_base.empty:
                         logging.error(f"({instrument}) No data left after cleaning NaNs from the full base file. Aborting.")
