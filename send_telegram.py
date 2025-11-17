@@ -1,4 +1,4 @@
-# send_telegram.py
+# geonera-ai/send_telegram.py
 
 import os
 import logging

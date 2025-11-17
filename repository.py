@@ -1,4 +1,4 @@
-# file: ai/repository.py
+# file: geonera-ai/repository.py
 
 import logging
 from datetime import datetime

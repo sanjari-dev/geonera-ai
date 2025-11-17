@@ -1,4 +1,4 @@
-# file: ai/selection/phase2_autoencoder.py
+# file: geonera-ai/selection/phase2_autoencoder.py
 
 import logging
 import pandas as pd
@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler
 
 from .common import _split_data_components
-from ..models import Autoencoder
+from models import Autoencoder
 
 
 def run_phase2_selection_autoencoder(

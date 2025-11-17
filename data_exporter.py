@@ -1,4 +1,4 @@
-# file: ai/data_exporter.py
+# file: geonera-ai/data_exporter.py
 
 import pandas as pd
 import logging

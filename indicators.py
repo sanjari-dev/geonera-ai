@@ -1,4 +1,4 @@
-# file: ai/indicators.py
+# file: geonera-ai/indicators.py
 
 import pandas as pd
 import numpy as np

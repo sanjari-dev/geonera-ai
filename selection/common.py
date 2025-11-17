@@ -1,4 +1,4 @@
-# file: ai/selection/common.py
+# file: geonera-ai/selection/common.py
 
 import logging
 import pandas as pd

@@ -1,4 +1,4 @@
-# main.py
+# geonera-ai/main.py
 
 import logging
 import os

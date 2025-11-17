@@ -1,9 +1,9 @@
-# file: ai/pipeline_steps.py
+# file: geonera-ai/pipeline_steps.py
 
 import logging
 import os
 import pandas as pd
-import utils as utils
+import utils
 from config import get_db_connection
 from repository import get_candles_data
 from data_exporter import create_raw_features

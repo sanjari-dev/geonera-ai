@@ -1,4 +1,4 @@
-name: geonera-ai
+name: geonera-geonera-ai
 channels:
   - pytorch
   - nvidia

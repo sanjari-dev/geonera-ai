@@ -1,4 +1,4 @@
-# file: ai/models.py
+# file: geonera-ai/models.py
 
 import torch.nn as nn
 

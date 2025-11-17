@@ -1,4 +1,4 @@
-# config.py
+# geonera-ai/config.py
 
 import os
 import logging

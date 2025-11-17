@@ -1,4 +1,4 @@
-# file: ai/selection/phase1_variance.py
+# file: geonera-ai/selection/phase1_variance.py
 
 import logging
 import pandas as pd

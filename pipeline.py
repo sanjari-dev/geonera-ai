@@ -1,4 +1,4 @@
-# file: ai/pipeline.py
+# file: geonera-ai/pipeline.py
 
 import logging
 import os
@@ -29,8 +29,7 @@ def _run_selection_phase(
         logging.info(f"({instrument}) --- Starting Feature Selection: {phase_name} ---")
         df_out = selection_func(input_df, **kwargs)
         if df_out is None or df_out.empty:
-            logging.warning(
-                f"({instrument}) {phase_name} selection resulted in an empty or None DataFrame. No file saved.")
+            logging.warning(f"({instrument}) {phase_name} selection resulted in an empty or None DataFrame. No file saved.")
             return None
         logging.info(f"({instrument}) Saving {phase_name} file with shape: {df_out.shape}")
         df_out.to_parquet(output_file, index=False)
@@ -91,7 +90,7 @@ def run_pipeline_for_instrument(output_dir: str) -> str:
                     # 7. Check/Get Base Data
                     logging.info(f"({instrument}) Checking for base feature file: {files['base']}")
                     if not os.path.exists(files['base']):
-                        logging.warning( f"({instrument}) Base file not found. Starting full (non-streaming) generator...")
+                        logging.warning(f"({instrument}) Base file not found. Starting full (non-streaming) generator...")
                         status = generate_base_data_full(params, files['base'])
                         if not status.startswith("SUCCESS"):
                             return status
@@ -113,8 +112,7 @@ def run_pipeline_for_instrument(output_dir: str) -> str:
                         return f"FAILED ({instrument}): No data left after full base file NaN cleaning."
 
                     # 8. Run Phase 1
-                    df_phase1 = _run_selection_phase("Phase 1", df_base_clean, files['phase_1'], run_phase1_selection,
-                                                     instrument)
+                    df_phase1 = _run_selection_phase("Phase 1", df_base_clean, files['phase_1'], run_phase1_selection, instrument)
                     del df_base_clean  # Free memory
                     if df_phase1 is None:
                         return f"FAILED ({instrument}): Phase 1 returned no data."

@@ -1,4 +1,4 @@
-# file: ai/selection/phase4_stability.py
+# file: geonera-ai/selection/phase4_stability.py
 
 import logging
 import pandas as pd
@@ -53,7 +53,7 @@ def run_phase4_selection(df: pd.DataFrame, importance_quantile: float = 0.5) -> 
         logging.info(f"Phase 4 ({regime}): Training CatBoost model on {len(X_regime)} samples")
         core_model = cb.CatBoostRegressor(
             iterations=500,
-            verbose=False,
+            verbose=100,
             random_state=42,
             task_type='GPU',
             allow_writing_files=False
