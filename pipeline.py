@@ -124,7 +124,7 @@ def run_pipeline_for_instrument(output_dir: str) -> str:
                     files['phase_2'],
                     run_phase2_selection_autoencoder,
                     instrument,
-                    bottleneck_size=300,
+                    bottleneck_size=2000,
                     num_epochs=20,
                     batch_size=512
                 )
@@ -141,7 +141,7 @@ def run_pipeline_for_instrument(output_dir: str) -> str:
                 instrument,
                 n_trials=20,
                 shap_scores_path=files['shap_scores'],
-                n_top_features=250
+                n_top_features=750
             )
             del df_phase2
             if df_phase3 is None:

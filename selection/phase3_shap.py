@@ -17,7 +17,7 @@ def run_phase3_selection(
         df: pd.DataFrame,
         n_trials: int = 20,
         shap_scores_path: str = "phase3_shap_scores.csv",
-        n_top_features: int = 250
+        n_top_features: int = 750
 ) -> pd.DataFrame | None:
     logging.info(f"Phase 3 Input Shape: {df.shape}")
 
