@@ -8,7 +8,7 @@ from utils import define_file_paths, save_column_list
 from pipeline_steps import generate_base_data_full, clean_base_data
 from selection import (
     run_phase1_selection,
-    run_phase2_selection_autoencoder,
+    run_phase2_clustering,
     run_phase3_selection,
     run_phase4_selection
 )
@@ -122,11 +122,9 @@ def run_pipeline_for_instrument(output_dir: str) -> str:
                     "Phase 2",
                     df_phase1,
                     files['phase_2'],
-                    run_phase2_selection_autoencoder,
+                    run_phase2_clustering,
                     instrument,
-                    bottleneck_size=2000,
-                    num_epochs=20,
-                    batch_size=512
+                    correlation_threshold=0.95
                 )
                 del df_phase1
                 if df_phase2 is None:
