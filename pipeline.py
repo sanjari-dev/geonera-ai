@@ -164,21 +164,22 @@ def run_pipeline_for_instrument(output_dir: str) -> str:
         logging.info(f"({instrument}) --- Finished Feature Selection: Phase 4 ---")
 
         # 12. Final Cleanup
-        logging.info(f"({instrument}) Cleaning final DataFrame. Removing temporary target and utility columns...")
-
-        columns_to_drop = [
+        logging.info(f"({instrument}) Cleaning final DataFrame. Keeping selective ATRs for TFT context...")
+        keep_atrs_whitelist = ['atr_14', 'atr_50', 'atr_100', 'atr_200']
+        all_existing_atrs = [c for c in df_phase4.columns if c.startswith('atr_')]
+        atrs_to_drop = [c for c in all_existing_atrs if c not in keep_atrs_whitelist]
+        base_drop_list = [
             'target_open_future_1',
             'target_high_future_1',
             'target_low_future_1',
             'target_close_future_1',
-            'atr_20',
             'regime'
         ]
-
+        columns_to_drop = base_drop_list + atrs_to_drop
         existing_cols_to_drop = [col for col in columns_to_drop if col in df_phase4.columns]
-
         df_phase4 = df_phase4.drop(columns=existing_cols_to_drop)
-
+        kept_atrs = [c for c in df_phase4.columns if c.startswith('atr_')]
+        logging.info(f"({instrument}) Kept {len(kept_atrs)} ATR features for model context: {kept_atrs}")
         logging.info(f"({instrument}) Final cleanup complete. Final shape for training: {df_phase4.shape}")
 
         # 13. Manual Save of Final File

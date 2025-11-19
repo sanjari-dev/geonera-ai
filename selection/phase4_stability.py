@@ -4,98 +4,169 @@ import logging
 import pandas as pd
 import catboost as cb
 from sklearn.multioutput import MultiOutputRegressor
+from tqdm import tqdm
 
 from .common import (
     _split_data_components,
     _get_volatility_regime,
-    _get_aggregated_importances,
-    PROTECTED_VOL_FEATURE
+    _get_aggregated_importances
 )
 
 
+def _prune_correlated_features(df: pd.DataFrame, feature_list: list, votes_dict: dict, threshold: float = 0.98) -> list:
+    if not feature_list or len(feature_list) < 2:
+        return feature_list
+
+    logging.info(f"Phase 4.5: Checking correlation redundancy for {len(feature_list)} winning features...")
+    features_df = df[feature_list]
+    corr_matrix = features_df.corr().abs()
+
+    to_drop = set()
+
+    for i in range(len(corr_matrix.columns)):
+        for j in range(i):
+            col_i = corr_matrix.columns[i]
+            col_j = corr_matrix.columns[j]
+
+            if col_i in to_drop or col_j in to_drop:
+                continue
+
+            if corr_matrix.iloc[i, j] > threshold:
+                vote_i = votes_dict.get(col_i, 0)
+                vote_j = votes_dict.get(col_j, 0)
+
+                if vote_i < vote_j:
+                    to_drop.add(col_i)
+                else:
+                    to_drop.add(col_j)
+
+    final_features = [f for f in feature_list if f not in to_drop]
+    logging.info(f"Phase 4.5: Removed {len(to_drop)} redundant features. Kept {len(final_features)} unique strong features.")
+    return final_features
+
+
 def run_phase4_selection(df: pd.DataFrame, importance_quantile: float = 0.5) -> pd.DataFrame | None:
-    logging.info(f"Phase 4 Input Shape: {df.shape}")
+    logging.info(f"Phase 4 (Ensemble Stability Loop) Input Shape: {df.shape}")
+
     split_result = _split_data_components(df)
     if split_result is None:
-        logging.error("Phase 4: Failed to split data components. Aborting.")
         return None
     id_cols, target_cols, feature_cols, protected_cols = split_result
 
-    if PROTECTED_VOL_FEATURE not in protected_cols:
-        logging.error(f"Phase 4: Required feature '{PROTECTED_VOL_FEATURE}' not found in protected columns. Aborting.")
-        return None
-
-    vol_feature = PROTECTED_VOL_FEATURE
     X_df = df[feature_cols]
     y_df = df[target_cols]
 
     if X_df.empty:
-        logging.warning("Phase 4: No features found to run stability test on. Skipping.")
+        logging.warning("Phase 4: No features found to run stability test on.")
         return df
 
-    logging.info(f"Phase 4: Separated {len(feature_cols)} features for stability testing.")
-    logging.info(f"Phase 4: Labeling data with volatility regimes based on '{vol_feature}'")
+    START_ATR = 5
+    END_ATR = 200
+    STEP = 5
+    atr_candidates = [f"atr_{i}" for i in range(START_ATR, END_ATR + 1, STEP)]
+    valid_atr_cols = [col for col in atr_candidates if col in df.columns]
 
-    df['regime'] = _get_volatility_regime(df[vol_feature])
-    regimes = ['LOW_VOL', 'MID_VOL', 'HIGH_VOL']
-    regime_importances = {}
+    if not valid_atr_cols:
+        logging.error("Phase 4: No 'atr_XX' columns found. Aborting.")
+        return None
 
-    for regime in regimes:
-        logging.info(f"--- Processing Regime: {regime} ---")
-        regime_mask = (df['regime'] == regime)
-        X_regime = df.loc[regime_mask, feature_cols]
-        y_regime = df.loc[regime_mask, target_cols]
+    feature_votes = {feat: 0 for feat in feature_cols}
+    for atr in valid_atr_cols:
+        if atr not in feature_votes:
+            feature_votes[atr] = 0
 
-        if len(X_regime) < 100:
-            logging.warning(f"Regime '{regime}' has only {len(X_regime)} samples. Skipping.")
+    total_iterations = 0
+
+    for atr_col in tqdm(valid_atr_cols, desc="ATR Stability Loop"):
+        try:
+            current_regimes = _get_volatility_regime(df[atr_col])
+        except (ValueError, TypeError, KeyError) as e:
+            logging.warning(f"Phase 4: Skipped regime calc for {atr_col}: {e}")
+            continue
+        except Exception as e:
+            logging.error(f"Phase 4: Unexpected error in regime calc for {atr_col}: {e}")
             continue
 
-        logging.info(f"Phase 4 ({regime}): Training CatBoost model on {len(X_regime)} samples")
-        core_model = cb.CatBoostRegressor(
-            iterations=500,
-            verbose=100,
-            random_state=42,
-            task_type='GPU',
-            allow_writing_files=False
-        )
-        multi_model = MultiOutputRegressor(core_model)
-        try:
-            multi_model.fit(X_regime, y_regime)
-            avg_imp = _get_aggregated_importances(multi_model, X_regime.columns.tolist())
-            regime_importances[regime] = avg_imp
-            logging.info(f"Phase 4 ({regime}): Model training and importance extraction complete.")
-        except Exception as e:
-            logging.error(f"Phase 4 ({regime}): Failed to train model: {e}")
+        regimes = ['LOW_VOL', 'MID_VOL', 'HIGH_VOL']
+        regime_importances = {}
+        valid_iteration = True
 
-    if len(regime_importances) < len(regimes):
-        logging.error("Phase 4: Failed to train on all regimes. Aborting stability analysis.")
+        for regime in regimes:
+            regime_mask = (current_regimes == regime)
+            X_regime = X_df.loc[regime_mask]
+            y_regime = y_df.loc[regime_mask]
+
+            X_regime_with_atr = X_regime.copy()
+            if atr_col not in X_regime_with_atr.columns and atr_col in df.columns:
+                X_regime_with_atr[atr_col] = df.loc[regime_mask, atr_col]
+
+            if len(X_regime) < 50:
+                valid_iteration = False
+                break
+
+            core_model = cb.CatBoostRegressor(
+                iterations=100,
+                depth=4,
+                learning_rate=0.1,
+                verbose=False,
+                random_state=42,
+                task_type='GPU',
+                allow_writing_files=False
+            )
+            multi_model = MultiOutputRegressor(core_model)
+            try:
+                multi_model.fit(X_regime_with_atr, y_regime)
+                avg_imp = _get_aggregated_importances(multi_model, X_regime_with_atr.columns.tolist())
+                regime_importances[regime] = avg_imp
+            except Exception as e:
+                logging.warning(f"Phase 4: Training failed for {atr_col} ({regime}). Error: {e}")
+                valid_iteration = False
+                break
+
+        if not valid_iteration or len(regime_importances) < 3:
+            continue
+
+        stability_df = pd.DataFrame(regime_importances)
+        quantiles = stability_df.quantile(importance_quantile)
+        stable_mask = pd.Series(True, index=stability_df.index)
+        for r in regimes:
+            stable_mask = stable_mask & (stability_df[r] > quantiles[r])
+
+        stable_feats = stability_df[stable_mask].index.tolist()
+
+        for f in stable_feats:
+            if f in feature_votes:
+                feature_votes[f] += 1
+
+        total_iterations += 1
+
+    if total_iterations == 0:
+        logging.error("Phase 4: No valid iterations completed. Aborting.")
         return None
 
-    logging.info("Phase 4: Analyzing feature stability across all regimes")
-    stability_df = pd.DataFrame(regime_importances)
-    quantiles = stability_df.quantile(importance_quantile)
+    CONSENSUS_THRESHOLD = 0.4
+    min_votes = int(total_iterations * CONSENSUS_THRESHOLD)
 
-    logging.info(f"Phase 4: Stability threshold (quantile={importance_quantile}):")
-    logging.info(f"  LOW_VOL:  > {quantiles.get('LOW_VOL', 0):.4f}")
-    logging.info(f"  MID_VOL:  > {quantiles.get('MID_VOL', 0):.4f}")
-    logging.info(f"  HIGH_VOL: > {quantiles.get('HIGH_VOL', 0):.4f}")
+    voting_winners = [f for f, v in feature_votes.items() if v >= min_votes]
 
-    stable_mask = pd.Series(True, index=stability_df.index)
-    for regime in regime_importances.keys():
-        stable_mask = stable_mask & (stability_df[regime] > quantiles[regime])
+    atr_winners = [f for f in voting_winners if f.startswith('atr_')]
+    other_winners = [f for f in voting_winners if not f.startswith('atr_')]
 
-    stable_features = stability_df[stable_mask].index.tolist()
-    dropped_count = len(feature_cols) - len(stable_features)
+    logging.info(f"Phase 4: Voting complete. Candidates: {len(atr_winners)} ATRs, {len(other_winners)} others.")
 
-    if not stable_features:
-        logging.error(f"Phase 4: No features were found to be stable across all regimes (using quantile={importance_quantile}). Aborting.")
-        return None
+    final_atrs = _prune_correlated_features(df, atr_winners, feature_votes, threshold=0.95)
+    final_others = other_winners
 
-    logging.info(f"Phase 4: Kept {len(stable_features)} stable features.")
-    logging.info(f"Phase 4: Dropped {dropped_count} unstable features.")
+    final_features = final_atrs + final_others
 
-    X_selected_df = X_df[stable_features]
-    final_df = pd.concat([df[id_cols], y_df, df[protected_cols], X_selected_df], axis=1)
+    logging.info(f"Phase 4 Final: Selected {len(final_atrs)} Best ATRs: {final_atrs}")
+    cols_to_concat = [df[id_cols], y_df, df[protected_cols]]
+
+    new_feats = [f for f in final_features if f not in protected_cols]
+    if new_feats:
+        cols_to_concat.append(df[new_feats])
+
+    final_df = pd.concat(cols_to_concat, axis=1)
 
     logging.info(f"Phase 4: Final shape: {final_df.shape}.")
     return final_df
