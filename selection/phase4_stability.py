@@ -62,7 +62,7 @@ def run_phase4_selection(df: pd.DataFrame, importance_quantile: float = 0.5) -> 
 
     START_ATR = 5
     END_ATR = 200
-    STEP = 5
+    STEP = 1
     atr_candidates = [f"atr_{i}" for i in range(START_ATR, END_ATR + 1, STEP)]
     valid_atr_cols = [col for col in atr_candidates if col in df.columns]
 
@@ -72,11 +72,9 @@ def run_phase4_selection(df: pd.DataFrame, importance_quantile: float = 0.5) -> 
 
     feature_votes = {feat: 0 for feat in feature_cols}
     for atr in valid_atr_cols:
-        if atr not in feature_votes:
-            feature_votes[atr] = 0
+        feature_votes[atr] = 0
 
     total_iterations = 0
-
     for atr_col in tqdm(valid_atr_cols, desc="ATR Stability Loop"):
         try:
             current_regimes = _get_volatility_regime(df[atr_col])
@@ -95,7 +93,6 @@ def run_phase4_selection(df: pd.DataFrame, importance_quantile: float = 0.5) -> 
             regime_mask = (current_regimes == regime)
             X_regime = X_df.loc[regime_mask]
             y_regime = y_df.loc[regime_mask]
-
             X_regime_with_atr = X_regime.copy()
             if atr_col not in X_regime_with_atr.columns and atr_col in df.columns:
                 X_regime_with_atr[atr_col] = df.loc[regime_mask, atr_col]
@@ -147,6 +144,7 @@ def run_phase4_selection(df: pd.DataFrame, importance_quantile: float = 0.5) -> 
     CONSENSUS_THRESHOLD = 0.4
     min_votes = int(total_iterations * CONSENSUS_THRESHOLD)
 
+    logging.info(f"Phase 4: Loop complete. Total iterations: {total_iterations}. Vote threshold: {min_votes}")
     voting_winners = [f for f, v in feature_votes.items() if v >= min_votes]
 
     atr_winners = [f for f in voting_winners if f.startswith('atr_')]
@@ -160,13 +158,17 @@ def run_phase4_selection(df: pd.DataFrame, importance_quantile: float = 0.5) -> 
     final_features = final_atrs + final_others
 
     logging.info(f"Phase 4 Final: Selected {len(final_atrs)} Best ATRs: {final_atrs}")
-    cols_to_concat = [df[id_cols], y_df, df[protected_cols]]
 
-    new_feats = [f for f in final_features if f not in protected_cols]
-    if new_feats:
-        cols_to_concat.append(df[new_feats])
+    core_protected = [c for c in protected_cols if not c.startswith('atr_')]
+    cols_to_concat = [
+        df[id_cols],
+        y_df,
+        df[core_protected],
+        df[final_features]
+    ]
 
     final_df = pd.concat(cols_to_concat, axis=1)
+    final_df = final_df.loc[:, ~final_df.columns.duplicated()]
 
     logging.info(f"Phase 4: Final shape: {final_df.shape}.")
     return final_df
