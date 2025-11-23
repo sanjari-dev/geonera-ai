@@ -3,6 +3,8 @@
 import logging
 import os
 import pandas as pd
+import subprocess
+import psutil
 from datetime import timedelta
 
 def save_column_list(df: pd.DataFrame, parquet_file_path: str, instrument: str):
@@ -63,3 +65,36 @@ def get_timedelta_for_timeframe(timeframe: str) -> timedelta:
 
     logging.warning(f"Undefined timeframe {timeframe}, defaulting to m1.")
     return timedelta(minutes=1)
+
+
+def log_resource_usage(step_name: str, file_path: str = None):
+    process = psutil.Process(os.getpid())
+    mem_bytes = process.memory_info().rss
+    mem_mb = mem_bytes / (1024 * 1024)
+    mem_gb = mem_mb / 1024
+
+    log_msg = f"--- [RESOURCE MONITOR] Step: {step_name} | RAM: {mem_mb:.2f} MB ({mem_gb:.2f} GB)"
+    try:
+        result = subprocess.check_output(
+            ['nvidia-smi', '--query-gpu=index,memory.used,memory.total', '--format=csv,nounits,noheader'],
+            encoding='utf-8',
+            stderr=subprocess.DEVNULL
+        )
+        rows = result.strip().split('\n')
+        for row in rows:
+            idx, used, total = row.split(',')
+            log_msg += f" | GPU {idx.strip()} VRAM: {used.strip()}MB / {total.strip()}MB"
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+    except Exception as e:
+        logging.warning(f"Failed to query GPU VRAM: {e}")
+
+    if file_path:
+        if os.path.exists(file_path):
+            file_bytes = os.path.getsize(file_path)
+            file_mb = file_bytes / (1024 * 1024)
+            log_msg += f" | File: {file_mb:.2f} MB"
+        else:
+            log_msg += f" | File: NOT FOUND"
+
+    logging.info(log_msg)

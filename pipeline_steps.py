@@ -38,6 +38,7 @@ def generate_base_data_full(params: dict, base_parquet_file: str) -> str:
             start_time=params['start_time'],
             end_time=params['end_time']
         )
+        utils.log_resource_usage("Fetched Candles Data from DB")
 
         if not candles:
             logging.error(f"({instrument}) No data found for the entire range. Aborting.")
@@ -45,6 +46,7 @@ def generate_base_data_full(params: dict, base_parquet_file: str) -> str:
 
         logging.info(f"({instrument}) Data fetched. Found {len(candles)} rows. Creating raw features...")
         df_base_dirty = create_raw_features(candles)
+        utils.log_resource_usage("Created Raw Features (Dirty)")
 
         if df_base_dirty is None or df_base_dirty.empty:
             logging.error(f"({instrument}) create_raw_features failed or returned empty data for the full dataset.")
@@ -59,7 +61,7 @@ def generate_base_data_full(params: dict, base_parquet_file: str) -> str:
         logging.info(f"--- FULL LOAD COMPLETE. DIRTY file saved. Total: {total_rows_processed} rows. ---")
 
         utils.save_column_list(df=df_base_dirty, parquet_file_path=base_parquet_file, instrument=instrument)
-
+        utils.log_resource_usage("Saved Base Parquet", base_parquet_file)
         return f"SUCCESS ({instrument}): Base file generated ({total_rows_processed} rows)."
 
     except Exception as e:

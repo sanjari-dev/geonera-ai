@@ -4,7 +4,7 @@ import logging
 import os
 import pandas as pd
 from app_config import get_query_parameters
-from utils import define_file_paths, save_column_list
+from utils import define_file_paths, save_column_list, log_resource_usage
 from pipeline_steps import generate_base_data_full, clean_base_data
 from selection import (
     run_phase1_selection,
@@ -25,15 +25,18 @@ def _run_selection_phase(
     """
     Helper function to run a selection phase, log, and save the results.
     """
+    log_resource_usage(f"Start {phase_name} (Before Func)")
     try:
         logging.info(f"({instrument}) --- Starting Feature Selection: {phase_name} ---")
         df_out = selection_func(input_df, **kwargs)
+        log_resource_usage(f"End {phase_name} (After Func / In Memory)")
         if df_out is None or df_out.empty:
             logging.warning(f"({instrument}) {phase_name} selection resulted in an empty or None DataFrame. No file saved.")
             return None
         logging.info(f"({instrument}) Saving {phase_name} file with shape: {df_out.shape}")
         df_out.to_parquet(output_file, index=False)
         logging.info(f"({instrument}) {phase_name} selected features saved to {output_file}")
+        log_resource_usage(f"After Save {phase_name}", output_file)
         save_column_list(df=df_out, parquet_file_path=output_file, instrument=instrument)
         logging.info(f"({instrument}) --- Finished Feature Selection: {phase_name} ---")
         return df_out
@@ -54,6 +57,7 @@ def run_pipeline_for_instrument(output_dir: str) -> str:
     df_base, df_phase1, df_phase2, df_phase3 = None, None, None, None
     base_filename_str = f"{instrument}_UNKNOWN"
 
+    log_resource_usage("Pipeline Start")
     try:
         # 1. Load Configuration
         logging.info(f"({instrument}) Loading query parameters")
@@ -95,11 +99,13 @@ def run_pipeline_for_instrument(output_dir: str) -> str:
                         if not status.startswith("SUCCESS"):
                             return status
                         logging.info(f"({instrument}) Base file generation complete. Automatically proceeding.")
+                        log_resource_usage("After generate_base_data_full", files['base'])
 
                     try:
                         logging.info(f"({instrument}) Loading DIRTY base feature file: {files['base']}")
                         df_base = pd.read_parquet(files['base'])
                         logging.info(f"({instrument}) Successfully loaded DIRTY base file with shape: {df_base.shape}")
+                        log_resource_usage("After Loading Base Data to RAM", files['base'])
                     except Exception as e:
                         logging.error(f"({instrument}) Failed to read base file {files['base']}: {e}")
                         return f"FAILED ({instrument}): Could not read existing base file."
