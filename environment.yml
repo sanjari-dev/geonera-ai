@@ -1,4 +1,4 @@
-name: geonera-geonera-ai
+name: geonera-ai
 channels:
   - pytorch
   - nvidia
@@ -7,11 +7,13 @@ channels:
 dependencies:
   - python=3.12
 
+  # Core PyTorch & CUDA
   - pytorch
   - torchvision
   - torchaudio
   - pytorch-cuda=12.1
 
+  # Data Science & ML Core
   - pandas
   - numpy
   - scipy
@@ -23,6 +25,12 @@ dependencies:
   - optuna
   - tqdm
 
+  # Forecasting & Deep Learning (TFT Requirements)
+  - pytorch-forecasting
+  - pytorch-lightning
+  - tensorboard
+
+  # Utilities & Connectivity
   - clickhouse-driver
   - python-dotenv
   - lz4
